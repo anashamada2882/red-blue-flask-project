@@ -1,0 +1,170 @@
+from flask import Flask, request, render_template_string, session
+import sqlite3
+import bcrypt
+import os
+import secrets
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.secret_key = secrets.token_hex(16)  # For CSRF protection
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}  # Only images!
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Create database with bcrypt hashed passwords (SECURE!)
+def init_db():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT, password TEXT)''')
+    # Hash password with bcrypt (much more secure than MD5)
+    hashed = bcrypt.hashpw('securepass123'.encode(), bcrypt.gensalt())
+    c.execute("DELETE FROM users WHERE username='admin'")
+    c.execute("INSERT INTO users VALUES ('admin', ?)", (hashed,))
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# FIXED: SQL Injection protected with prepared statements
+@app.route('/', methods=['GET', 'POST'])
+def login():
+    message = ''
+    
+    # Generate CSRF token
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(16)
+    
+    if request.method == 'POST':
+        # CSRF protection
+        token = request.form.get('csrf_token')
+        if not token or token != session.get('csrf_token'):
+            message = '🛑 CSRF token validation failed!'
+            return render_template_string(get_template(), message=message, csrf_token=session['csrf_token'])
+        
+        username = request.form['username']
+        password = request.form['password'].encode()
+        
+        conn = sqlite3.connect('users.db')
+        c = conn.cursor()
+        # SECURE: Using prepared statements (prevents SQLi)
+        c.execute("SELECT password FROM users WHERE username = ?", (username,))
+        user = c.fetchone()
+        conn.close()
+        
+        if user and bcrypt.checkpw(password, user[0]):
+            message = f'✅ Login successful! Welcome {username}'
+            # Generate new CSRF token after successful login
+            session['csrf_token'] = secrets.token_hex(16)
+        else:
+            message = '❌ Login failed. Invalid credentials.'
+    
+    return render_template_string(get_template(), message=message, csrf_token=session['csrf_token'])
+
+# FIXED: Secure file upload with validation
+@app.route('/upload', methods=['POST'])
+def upload():
+    # CSRF protection
+    token = request.form.get('csrf_token')
+    if not token or token != session.get('csrf_token'):
+        return '🛑 CSRF token validation failed!<br><a href="/">Back</a>'
+    
+    if 'file' not in request.files:
+        return '❌ No file part!<br><a href="/">Back</a>'
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return '❌ No file selected!<br><a href="/">Back</a>'
+    
+    if file and allowed_file(file.filename):
+        # Secure the filename (removes dangerous characters)
+        filename = secure_filename(file.filename)
+        # Add random prefix to prevent overwriting
+        unique_filename = secrets.token_hex(8) + '_' + filename
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(filepath)
+        return f'✅ File uploaded securely!<br>Filename: {unique_filename}<br><a href="/">Back to login</a>'
+    else:
+        return '❌ Invalid file type! Only PNG, JPG, JPEG, GIF allowed.<br><a href="/">Back</a>'
+
+def get_template():
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>🔒 Secure Login System</title>
+        <style>
+            body { font-family: Arial; max-width: 600px; margin: 50px auto; padding: 20px; background: #f5f5f5; }
+            .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            input { margin: 10px 0; padding: 10px; width: 100%; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; }
+            button { padding: 12px 24px; background: #28a745; color: white; border: none; cursor: pointer; border-radius: 4px; width: 100%; font-size: 16px; }
+            button:hover { background: #218838; }
+            .message { padding: 15px; margin: 15px 0; background: #e9ecef; border-radius: 4px; }
+            .security-badge { background: #28a745; color: white; padding: 5px 10px; border-radius: 4px; font-size: 12px; }
+            hr { margin: 30px 0; border: none; border-top: 1px solid #ddd; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔒 Secure Login System <span class="security-badge">PROTECTED</span></h1>
+            <p><strong>New secure credentials:</strong> admin / securepass123</p>
+            <p style="font-size: 12px; color: #666;">
+                ✅ SQL Injection Protected<br>
+                ✅ Passwords Hashed with bcrypt<br>
+                ✅ CSRF Protection Enabled<br>
+                ✅ Secure File Upload Validation
+            </p>
+            
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label><strong>Username:</strong></label>
+                <input type="text" name="username" required>
+                <label><strong>Password:</strong></label>
+                <input type="password" name="password" required>
+                <button type="submit">🔐 Secure Login</button>
+            </form>
+            
+            {% if message %}
+            <div class="message">{{ message }}</div>
+            {% endif %}
+            
+            <hr>
+            
+            <h2>📤 Secure File Upload</h2>
+            <p style="font-size: 12px; color: #666;">Only image files (PNG, JPG, JPEG, GIF) are allowed. Max 5MB.</p>
+            <form method="post" enctype="multipart/form-data" action="/upload">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="file" name="file" accept=".png,.jpg,.jpeg,.gif" required>
+                <button type="submit">🔒 Upload Securely</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    '''
+
+if __name__ == '__main__':
+    print("🔒 Starting SECURE Flask app...")
+    print("📍 Access at: http://127.0.0.1:5000")
+    print("✅ All security measures enabled!")
+    print("   - SQL Injection: BLOCKED")
+    print("   - Password Hashing: bcrypt")
+    print("   - CSRF Protection: ENABLED")
+    print("   - File Upload: VALIDATED")
+    app.run(host='0.0.0.0', port=5000, debug=True)
+```
+
+4. Save: `Ctrl + S`
+
+---
+
+### Step 4.3: Update Requirements
+1. Open `requirements.txt`
+2. Replace with:
+```
+Flask==3.0.0
+bcrypt==4.1.2
