@@ -156,15 +156,4 @@ if __name__ == '__main__':
     print("   - CSRF Protection: ENABLED")
     print("   - File Upload: VALIDATED")
     app.run(host='0.0.0.0', port=5000, debug=True)
-```
 
-4. Save: `Ctrl + S`
-
----
-
-### Step 4.3: Update Requirements
-1. Open `requirements.txt`
-2. Replace with:
-```
-Flask==3.0.0
-bcrypt==4.1.2
